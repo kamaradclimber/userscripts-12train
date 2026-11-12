@@ -3,7 +3,7 @@
 // @namespace    https://12train.com/
 // @homepageURL  https://github.com/kamaradclimber/userscripts-12train/blob/main/12train-next-train.user.js
 // @source       https://github.com/kamaradclimber/userscripts-12train/blob/main/12train-next-train.user.js
-// @version      1.4
+// @version      1.5
 // @description  One-tap search on 12train.com: direction switches at noon Europe/Paris. Pre-selects FN30, automatically selects a fare after its price is tapped, and auto-fills booking details.
 // @match        https://www.12train.com/*
 // @match        https://12train.com/*
@@ -53,34 +53,226 @@
   const CARD_LABEL = 'Carte Famille Nombreuse 30%';
 
   // ---------------------------------------------------------------------------
-  // Stored data (localStorage) — nothing personal is hard-coded in this file.
+  // Versioned local data. Personal data stays in this browser, never in source.
+  // Legacy flat keys are migrated but deliberately left untouched for rollback.
   // ---------------------------------------------------------------------------
-  const KEYS = {
-    firstName: 't12_first_name',
-    lastName: 't12_last_name',
-    birthDate: 't12_birth_date', // JJ/MM/AAAA or YYYY-MM-DD
-    cardNumber: 't12_card_number',
+  const STORE_KEY = 't12.store';
+  const STORE_SCHEMA_VERSION = 1;
+  const STORE_BACKUP_PREFIX = `${STORE_KEY}.corrupt.`;
+  let storeReadOnly = false;
+  let storageAvailable = true;
+  let storageNoticeMessage = '';
+
+  function emptyStore() {
+    return {
+      schemaVersion: STORE_SCHEMA_VERSION,
+      updatedAt: new Date().toISOString(),
+      travellers: [{
+        id: 'default-traveller',
+        isDefault: true,
+        firstName: '',
+        lastName: '',
+        birthDate: '',
+        cards: [{ code: CARD_CODE, cardNumber: '' }],
+      }],
+    };
+  }
+
+  function migrateLegacyV0ToV1() {
+    const readLegacy = (key) => {
+      try { return localStorage.getItem(key) || ''; } catch (e) { return ''; }
+    };
+    const cardNumber = readLegacy('t12_card_number') || readLegacy('t12_fn30_number');
+    const migrated = emptyStore();
+    const me = migrated.travellers[0];
+    me.firstName = readLegacy('t12_first_name');
+    me.lastName = readLegacy('t12_last_name');
+    me.birthDate = readLegacy('t12_birth_date');
+    me.cards[0].cardNumber = cardNumber;
+    return migrated;
+  }
+
+  const STORE_MIGRATIONS = {
+    0: migrateLegacyV0ToV1,
   };
 
-  const store = {
-    get(key) {
-      try { return localStorage.getItem(key) || ''; } catch (e) { return ''; }
-    },
-    set(key, value) {
-      try {
-        if (value) localStorage.setItem(key, value);
-        else localStorage.removeItem(key);
-      } catch (e) { /* private mode: ignore */ }
-    },
-  };
+  function isValidStore(data) {
+    if (!data || !Number.isInteger(data.schemaVersion) || !Array.isArray(data.travellers)) return false;
+    if (data.schemaVersion > STORE_SCHEMA_VERSION) return true; // preserve newer data read-only
+    if (data.schemaVersion !== STORE_SCHEMA_VERSION || data.travellers.length === 0) return false;
+    let defaultCount = 0;
+    for (const traveller of data.travellers) {
+      if (!traveller || typeof traveller.id !== 'string' || typeof traveller.isDefault !== 'boolean') return false;
+      if (traveller.isDefault) defaultCount++;
+      if (typeof traveller.firstName !== 'string' || typeof traveller.lastName !== 'string'
+          || typeof traveller.birthDate !== 'string' || !Array.isArray(traveller.cards)) return false;
+      if (!traveller.cards.every((card) => card && typeof card.code === 'string'
+          && typeof card.cardNumber === 'string')) return false;
+    }
+    return defaultCount === 1;
+  }
+
+  function persistStore(data) {
+    try {
+      localStorage.setItem(STORE_KEY, JSON.stringify(data));
+      storageAvailable = true;
+      return true;
+    } catch (e) {
+      storageAvailable = false;
+      storageNoticeMessage = '12train: impossible d’enregistrer les données dans le stockage local de ce navigateur.';
+      return false;
+    }
+  }
+
+  function backupCorruptStore(raw) {
+    const backupKey = `${STORE_BACKUP_PREFIX}${Date.now()}`;
+    try {
+      localStorage.setItem(backupKey, raw);
+      return true;
+    } catch (e) {
+      storeReadOnly = true;
+      storageNoticeMessage = '12train: données locales illisibles. La sauvegarde de récupération a échoué; aucune donnée n’a été remplacée.';
+      return false;
+    }
+  }
+
+  function recoverCorruptStore(raw) {
+    if (!backupCorruptStore(raw)) return emptyStore();
+    storageNoticeMessage = '12train: les données locales étaient illisibles. Une copie a été sauvegardée; le profil a été réinitialisé.';
+    const fresh = emptyStore();
+    persistStore(fresh);
+    return fresh;
+  }
+
+  function loadStore() {
+    let raw;
+    try {
+      raw = localStorage.getItem(STORE_KEY);
+    } catch (e) {
+      storageAvailable = false;
+      storageNoticeMessage = '12train: stockage local indisponible; les informations ne seront pas conservées.';
+      return emptyStore();
+    }
+
+    if (raw === null) {
+      // Version 0 consisted of individual t12_* keys (including both historical
+      // card-number keys). Migrate those once, and keep the old keys as backup.
+      const migrated = migrateLegacyV0ToV1();
+      persistStore(migrated);
+      return migrated;
+    }
+
+    let parsed;
+    try {
+      parsed = JSON.parse(raw);
+    } catch (e) {
+      return recoverCorruptStore(raw);
+    }
+
+    if (!parsed || !Number.isInteger(parsed.schemaVersion) || parsed.schemaVersion < 0) {
+      return recoverCorruptStore(raw);
+    }
+    if (parsed.schemaVersion > STORE_SCHEMA_VERSION) {
+      storeReadOnly = true;
+      storageNoticeMessage = '12train: les données ont été créées par une version plus récente du script. Mettez le script à jour avant de modifier vos profils.';
+      return emptyStore();
+    }
+
+    let migrated = parsed;
+    while (migrated.schemaVersion < STORE_SCHEMA_VERSION) {
+      const migration = STORE_MIGRATIONS[migrated.schemaVersion];
+      if (!migration) return recoverCorruptStore(raw);
+      migrated = migration(migrated);
+    }
+    if (!isValidStore(migrated)) return recoverCorruptStore(raw);
+    if (migrated !== parsed) persistStore(migrated);
+    return migrated;
+  }
+
+  let travellerStore = loadStore();
+
+  window.addEventListener('storage', (event) => {
+    if (event.key !== STORE_KEY && event.key !== null) return;
+    if (event.newValue === null) {
+      storeReadOnly = true;
+      storageNoticeMessage = '12train: les données locales ont été supprimées ou modifiées dans un autre onglet. Rechargez la page avant de modifier vos profils.';
+      showStorageNotice();
+      return;
+    }
+    try {
+      const latest = JSON.parse(event.newValue);
+      if (latest.schemaVersion > STORE_SCHEMA_VERSION) {
+        storeReadOnly = true;
+        storageNoticeMessage = '12train: les données ont été créées par une version plus récente du script. Mettez le script à jour avant de modifier vos profils.';
+      } else if (isValidStore(latest)) {
+        travellerStore = latest;
+      } else {
+        storeReadOnly = true;
+        storageNoticeMessage = '12train: les données locales ont changé dans un autre onglet. Rechargez la page avant de modifier vos profils.';
+      }
+    } catch (e) {
+      storeReadOnly = true;
+      storageNoticeMessage = '12train: les données locales sont illisibles dans un autre onglet. Rechargez la page avant de modifier vos profils.';
+    }
+    if (storageNoticeMessage) showStorageNotice();
+  });
+
+  function getDefaultTraveller(data = travellerStore) {
+    return data.travellers.find((traveller) => traveller.isDefault) || data.travellers[0];
+  }
 
   function getIdentity() {
+    const me = getDefaultTraveller();
+    const familyCard = me.cards.find((card) => card.code === CARD_CODE);
     return {
-      firstName: store.get(KEYS.firstName),
-      lastName: store.get(KEYS.lastName),
-      birthDate: store.get(KEYS.birthDate),
-      cardNumber: store.get(KEYS.cardNumber),
+      firstName: me.firstName,
+      lastName: me.lastName,
+      birthDate: me.birthDate,
+      cardNumber: familyCard ? familyCard.cardNumber : '',
     };
+  }
+
+  function saveDefaultIdentity(identity) {
+    if (storeReadOnly || !storageAvailable) return false;
+
+    // Re-read immediately before writing so a stale tab preserves any other
+    // travellers added or edited by a newer tab.
+    let latest = travellerStore;
+    try {
+      const raw = localStorage.getItem(STORE_KEY);
+      if (raw !== null) {
+        const parsed = JSON.parse(raw);
+        if (parsed.schemaVersion > STORE_SCHEMA_VERSION) {
+          storeReadOnly = true;
+          storageNoticeMessage = '12train: les données ont été créées par une version plus récente du script. Mettez le script à jour avant de modifier vos profils.';
+          return false;
+        }
+        if (!isValidStore(parsed)) {
+          storageNoticeMessage = '12train: le stockage a changé ou est invalide. Rechargez la page avant de réessayer.';
+          return false;
+        }
+        latest = parsed;
+      }
+    } catch (e) {
+      storageNoticeMessage = '12train: impossible de relire les données locales. Rechargez la page avant de réessayer.';
+      return false;
+    }
+
+    const me = getDefaultTraveller(latest);
+    me.firstName = identity.firstName;
+    me.lastName = identity.lastName;
+    me.birthDate = identity.birthDate;
+    let familyCard = me.cards.find((card) => card.code === CARD_CODE);
+    if (!familyCard) {
+      familyCard = { code: CARD_CODE, cardNumber: '' };
+      me.cards.push(familyCard);
+    }
+    familyCard.cardNumber = identity.cardNumber;
+    latest.updatedAt = new Date().toISOString();
+
+    if (!persistStore(latest)) return false;
+    travellerStore = latest;
+    return true;
   }
 
   // ---------------------------------------------------------------------------
@@ -331,6 +523,7 @@
   let identityPromptShown = false;
 
   function maybeAskForIdentity() {
+    if (storeReadOnly || !storageAvailable) return;
     const container = document.getElementById('booking-form-passengers-forms');
     if (!container || !container.childElementCount) return;
     const id = getIdentity();
@@ -363,6 +556,10 @@
   // Settings
   // ---------------------------------------------------------------------------
   function openSettings() {
+    if (storeReadOnly) {
+      showStorageNotice();
+      return;
+    }
     const id = getIdentity();
     const firstName = prompt('Prénom :', id.firstName);
     if (firstName === null) return;
@@ -373,10 +570,16 @@
     const cardNumber = prompt('Numéro de carte de réduction (laisser vide si non demandé) :', id.cardNumber);
     if (cardNumber === null) return;
 
-    store.set(KEYS.firstName, firstName.trim());
-    store.set(KEYS.lastName, lastName.trim());
-    store.set(KEYS.birthDate, birthDate.trim());
-    store.set(KEYS.cardNumber, cardNumber.trim());
+    const saved = saveDefaultIdentity({
+      firstName: firstName.trim(),
+      lastName: lastName.trim(),
+      birthDate: birthDate.trim(),
+      cardNumber: cardNumber.trim(),
+    });
+    if (!saved) {
+      showStorageNotice();
+      return;
+    }
 
     fillBookingForm(); // apply immediately if the form is on screen
   }
@@ -384,6 +587,31 @@
   // ---------------------------------------------------------------------------
   // UI
   // ---------------------------------------------------------------------------
+  function showStorageNotice() {
+    if (!storageNoticeMessage || !document.body) return;
+    let notice = document.getElementById('t12-storage-notice');
+    if (notice) {
+      notice.querySelector('.t12-storage-notice-message').textContent = storageNoticeMessage;
+      notice.style.display = 'flex';
+      return;
+    }
+
+    notice = document.createElement('div');
+    notice.id = 't12-storage-notice';
+    notice.style.cssText = 'position:fixed;top:12px;left:12px;right:12px;z-index:2147483647;display:flex;align-items:center;gap:12px;padding:12px 14px;border-radius:8px;background:#fff3cd;color:#664d03;box-shadow:0 3px 12px rgba(0,0,0,.2);font:14px/1.4 system-ui,sans-serif';
+    const message = document.createElement('span');
+    message.className = 't12-storage-notice-message';
+    message.textContent = storageNoticeMessage;
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.textContent = '×';
+    close.setAttribute('aria-label', 'Fermer');
+    close.style.cssText = 'margin-left:auto;border:0;background:transparent;font:22px/1 system-ui,sans-serif;color:inherit;cursor:pointer';
+    close.onclick = () => notice.remove();
+    notice.append(message, close);
+    document.body.appendChild(notice);
+  }
+
   function addButton() {
     if (document.getElementById('t12-next-train-btn')) return;
     if (!document.getElementById('origin')) return; // only on the search page
@@ -439,4 +667,5 @@
   }
 
   addButton();
+  if (storageNoticeMessage) showStorageNotice();
 })();

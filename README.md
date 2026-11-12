@@ -31,8 +31,14 @@ saved preferences and one-tap access to a frequent journey.
   form appears after you pick a train;
 - a **⚙ button** to store your identity + card number once, in `localStorage`, per browser.
 
-Nothing personal is hard-coded in the script; everything is stored in your browser's
-`localStorage` (no cloud, no sync — install and configure on each device).
+Nothing personal is hard-coded in the script; details are stored in that browser's
+`localStorage` (no cloud, no sync — install and configure on each device). The data lives under
+`t12.store` as a versioned JSON document (`schemaVersion`), ready for future traveller profiles.
+Local storage is not encrypted and is accessible to scripts running on the 12train origin and to
+anyone with access to that browser. The script migrates the existing flat `t12_*` keys and leaves
+them in place for rollback. If the new document is corrupt, it backs up the raw value before
+resetting; if it sees a newer schema,
+it preserves it read-only and asks you to update the script.
 
 ## Install (Firefox)
 
@@ -57,7 +63,8 @@ node test-intercept.js     # verifies the exact search POST payload (FN30 includ
 node test-live-search.js   # full search, real results returned
 node test-no-card.js       # baseline: same search without the card (price delta proof)
 node test-booking-fill.js  # price tap → auto-select fare → booking form auto-filled
-node test-direction.js     # verifies both directions and the button label around noon
+node test-direction.js          # verifies both directions and the button label around noon
+node test-storage-migrations.js # legacy, corrupt, and future-schema migration checks
 ```
 
 If 12train changes its DOM, one of these will fail and show what to fix.
