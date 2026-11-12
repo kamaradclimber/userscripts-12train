@@ -27,11 +27,14 @@ saved preferences and one-tap access to a frequent journey.
   install defaults to one adult with FN30);
 - after you tap a fare price, automatically clicks the revealed **"Sélectionner ce trajet"**
   button. This selects the train but does not purchase it; booking and payment remain native;
-- **auto-fill of the booking form** (prénom, nom, date de naissance) as soon as the passenger
-  form appears after you pick a train;
-- a **⚙ traveller manager** to add, edit, remove, and choose a default traveller. Each profile
-  can store its name, birth date, and reduction cards. The quick-search button still searches
-  only for the default traveller; selecting additional family members for a search is a later step.
+- on the train-list page, a **Travellers · N** button opens the stored family list. Add or remove
+  people from this search, then refresh the same journey's results with fares recalculated for
+  that party;
+- **auto-fill of each booking passenger row** with the matching traveller's first name, last name,
+  birth date, and card number when the booking form appears;
+- a **⚙ traveller manager** beside **Mon compte** in the header to add, edit, remove, and choose a
+  default traveller. Each profile stores its name, birth date, and reduction cards. A fresh search
+  still starts with the default traveller only.
 
 Nothing personal is hard-coded in the script; details are stored in that browser's
 `localStorage` (no cloud, no sync — install and configure on each device). The data lives under
@@ -67,7 +70,8 @@ node test-no-card.js       # baseline: same search without the card (price delta
 node test-booking-fill.js  # price tap → auto-select fare → booking form auto-filled
 node test-direction.js          # verifies both directions and the button label around noon
 node test-storage-migrations.js # legacy, corrupt, and future-schema migration checks
-node test-traveller-manager.js  # add a traveller, store Rémi Liberté Jeune, search with default only
+node test-traveller-manager.js  # add a traveller and store Rémi Liberté Jeune
+node test-traveller-selection.js # re-search for a chosen party; train search endpoint is stubbed
 ```
 
 If 12train changes its DOM, one of these will fail and show what to fix.

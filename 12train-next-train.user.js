@@ -3,8 +3,8 @@
 // @namespace    https://12train.com/
 // @homepageURL  https://github.com/kamaradclimber/userscripts-12train/blob/main/12train-next-train.user.js
 // @source       https://github.com/kamaradclimber/userscripts-12train/blob/main/12train-next-train.user.js
-// @version      1.7
-// @description  One-tap 12train search with a local traveller manager, noon-based direction, stored reduction cards, auto fare selection, and booking autofill.
+// @version      1.8
+// @description  One-tap 12train search with family traveller selection, noon-based direction, stored reduction cards, auto fare selection, and row-specific booking autofill.
 // @match        https://www.12train.com/*
 // @match        https://12train.com/*
 // @run-at       document-idle
@@ -232,6 +232,12 @@
     };
   }
 
+  // Snapshot the roster used for currently displayed results. Booking details
+  // must match the ages/cards that produced those fares, even if a profile is
+  // edited in another tab while the result list is open.
+  let activeSearchTravellers = [JSON.parse(JSON.stringify(getDefaultTraveller()))];
+  let activeSearchTravellerIds = activeSearchTravellers.map((traveller) => traveller.id);
+
   function saveTravellerList(travellers, originalStoreRaw) {
     if (storeReadOnly || !storageAvailable) return false;
 
@@ -302,6 +308,18 @@
     if (age <= 25) return { code: 'YG', label: 'Jeune', ageGroupCode: '25' };
     if (age <= 59) return { code: 'AD', label: 'Adulte', ageGroupCode: '59' };
     return { code: 'SR', label: 'Senior', ageGroupCode: '60' };
+  }
+
+  function getDepartureDate() {
+    const dateInput = document.getElementById('departure_date');
+    const parts = dateInput && parseBirthDate(dateInput.value);
+    if (parts) {
+      const date = new Date(Number(parts.year), Number(parts.month) - 1, Number(parts.day));
+      if (date.getFullYear() === Number(parts.year)
+          && date.getMonth() === Number(parts.month) - 1
+          && date.getDate() === Number(parts.day)) return date;
+    }
+    return new Date();
   }
 
   // Set a value only if the field is empty, then fire an "input" event so the
@@ -388,71 +406,58 @@
     return row;
   }
 
-  function buildPassengerBox() {
+  function buildPassengerBox(traveller, rank, departureDate) {
     const box = document.createElement('div');
     box.className = 'j-p-form-passenger-control-box rail-search-passenger-anchor';
     box.dataset.pax_menu_action = 'update';
+    box.dataset.travellerId = traveller.id;
 
     const front = document.createElement('div');
     front.className = 'j-p-form-passenger-control-front';
 
+    const age = getAgeOnDate(traveller.birthDate, departureDate);
+    const passengerType = passengerTypeForAge(age);
     const type = document.createElement('button');
     type.className = 'select j-p-form-passenger-input-height rail-search-passenger-type j-p-form-toggle-passenger-type-options';
-    type.dataset.rank = '1';
-    type.dataset.sncf_age_group_code = '59';
-    type.dataset.passenger_type_udt_code = 'AD';
-    type.textContent = 'Adulte';
+    type.dataset.rank = String(rank);
+    type.dataset.sncf_age_group_code = passengerType.ageGroupCode;
+    type.dataset.passenger_type_udt_code = passengerType.code;
+    type.textContent = passengerType.label;
 
-    const age = document.createElement('input');
-    age.className = 'j-p-form-passenger-age input-text j-p-form-passenger-input-height';
-    age.placeholder = 'Age';
-    age.type = 'number';
+    const ageInput = document.createElement('input');
+    ageInput.className = 'j-p-form-passenger-age input-text j-p-form-passenger-input-height';
+    ageInput.placeholder = 'Age';
+    ageInput.type = 'number';
+    ageInput.value = age === null ? '' : String(age);
 
     const cardBtn = document.createElement('button');
     cardBtn.className = 'j-p-form-passenger-input-height j-p-form-passenger-show-card-menu-level-one j-p-form-button-orange-border';
     cardBtn.textContent = 'Carte';
 
-    front.append(type, age, cardBtn);
+    front.append(type, ageInput, cardBtn);
 
     const cardControl = document.createElement('div');
     cardControl.className = 'j-p-form-passenger-card-control';
     const receiver = document.createElement('div');
     receiver.className = 'j-p-form-passenger-cards-receiver';
+    traveller.cards.forEach((card) => receiver.appendChild(buildCardRow(card)));
     cardControl.append(receiver);
 
     box.append(front, cardControl);
     return box;
   }
 
-  function ensurePassengerWithCard() {
+  function applyPassengerRoster(travellers) {
     const container = document.getElementById('journey_planner_form_query_passengers');
-    if (!container) return;
+    if (!container || !travellers.length || travellers.length > 9) return false;
 
-    let box = container.querySelector('.j-p-form-passenger-control-box');
-    if (!box) {
-      box = buildPassengerBox();
-      container.appendChild(box);
-    }
-
-    const defaultTraveller = getDefaultTraveller();
-    const age = getAgeOnDate(defaultTraveller.birthDate);
-    const passengerType = passengerTypeForAge(age);
-    const type = box.querySelector('.rail-search-passenger-type');
-    if (type) {
-      type.dataset.rank = type.dataset.rank || '1';
-      type.dataset.sncf_age_group_code = passengerType.ageGroupCode;
-      type.dataset.passenger_type_udt_code = passengerType.code;
-      type.textContent = passengerType.label;
-    }
-    const ageInput = box.querySelector('.j-p-form-passenger-age');
-    if (ageInput && age !== null) ageInput.value = String(age);
-
-    // Use the default traveller's stored cards, rather than hard-coding FN30.
-    const receiver = box.querySelector('.j-p-form-passenger-cards-receiver');
-    if (receiver) {
-      receiver.innerHTML = '';
-      defaultTraveller.cards.forEach((card) => receiver.appendChild(buildCardRow(card)));
-    }
+    const departureDate = getDepartureDate();
+    container.replaceChildren(...travellers.map((traveller, index) =>
+      buildPassengerBox(traveller, index + 1, departureDate)
+    ));
+    activeSearchTravellers = JSON.parse(JSON.stringify(travellers));
+    activeSearchTravellerIds = activeSearchTravellers.map((traveller) => traveller.id);
+    return true;
   }
 
   // ---------------------------------------------------------------------------
@@ -477,7 +482,10 @@
     setToday(dateEl);
     setNextHour(hourEl);
     clearReturn();
-    ensurePassengerWithCard();
+    if (!applyPassengerRoster([getDefaultTraveller()])) {
+      alert('12train: impossible de configurer le voyageur par défaut.');
+      return;
+    }
 
     submit.click();
   }
@@ -513,6 +521,173 @@
   }
 
   // ---------------------------------------------------------------------------
+  // Change the party for the currently displayed results. The search is rerun
+  // because 12train fares and card eligibility are passenger-dependent.
+  // ---------------------------------------------------------------------------
+  function openTravellerSelection() {
+    if (document.getElementById('t12-traveller-selection')) return;
+    const activeIds = new Set(activeSearchTravellerIds);
+    const overlay = document.createElement('div');
+    overlay.id = 't12-traveller-selection';
+    overlay.setAttribute('role', 'dialog');
+    overlay.setAttribute('aria-modal', 'true');
+    overlay.setAttribute('aria-label', 'Voyageurs pour ce trajet');
+    overlay.style.cssText = 'position:fixed;inset:0;z-index:2147483647;display:flex;align-items:center;justify-content:center;padding:12px;background:rgba(0,0,0,.55);font:15px/1.4 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;color:#212529';
+
+    const panel = document.createElement('div');
+    panel.style.cssText = 'width:min(560px,100%);max-height:90vh;overflow:auto;background:#fff;border-radius:12px;padding:18px;box-shadow:0 8px 36px rgba(0,0,0,.35)';
+    const title = document.createElement('h2');
+    title.textContent = 'Voyageurs pour ce trajet';
+    title.style.cssText = 'margin:0 0 6px;font-size:21px';
+    const intro = document.createElement('p');
+    intro.textContent = 'Choisissez les personnes qui voyagent. Les résultats et tarifs seront actualisés pour ce groupe.';
+    intro.style.cssText = 'margin:0 0 12px;font-size:13px;color:#495057';
+    const list = document.createElement('div');
+    const status = document.createElement('div');
+    status.setAttribute('aria-live', 'polite');
+    status.style.cssText = 'margin-top:8px;color:#b02a37;font-size:13px';
+    const footer = document.createElement('div');
+    footer.style.cssText = 'display:flex;gap:8px;justify-content:space-between;align-items:center;flex-wrap:wrap;margin-top:16px';
+    const manage = document.createElement('button');
+    manage.type = 'button';
+    manage.textContent = 'Gérer les voyageurs';
+    manage.className = 't12-secondary-button';
+    const actions = document.createElement('div');
+    actions.style.cssText = 'display:flex;gap:8px;margin-left:auto';
+    const cancel = document.createElement('button');
+    cancel.type = 'button';
+    cancel.textContent = 'Annuler';
+    cancel.className = 't12-secondary-button';
+    const apply = document.createElement('button');
+    apply.type = 'button';
+    apply.className = 't12-primary-button';
+
+    const style = document.createElement('style');
+    style.textContent = `
+      #t12-traveller-selection * { box-sizing: border-box; }
+      #t12-traveller-selection button { min-height: 40px; border: 0; border-radius: 6px; padding: 8px 12px; cursor: pointer; font: inherit; }
+      #t12-traveller-selection .t12-secondary-button { background: #e9ecef; color: #212529; }
+      #t12-traveller-selection .t12-primary-button { background: #e8590c; color: #fff; font-weight: 600; }
+      #t12-traveller-selection .t12-party-member { display: flex; align-items: flex-start; gap: 10px; padding: 12px 4px; border-bottom: 1px solid #dee2e6; cursor: pointer; }
+      #t12-traveller-selection .t12-party-member input { display: block !important; position: static; visibility: visible; opacity: 1; appearance: auto; clip: auto; width: 20px; height: 20px; margin: 2px 0 0; flex: 0 0 auto; }
+      #t12-traveller-selection .t12-party-details { display: grid; gap: 2px; }
+      #t12-traveller-selection .t12-party-summary { color: #6c757d; font-size: 13px; }
+      #t12-traveller-selection button:disabled { opacity: .5; cursor: not-allowed; }
+    `;
+    document.head.appendChild(style);
+
+    const profileLabel = (traveller) => {
+      const age = getAgeOnDate(traveller.birthDate, getDepartureDate());
+      const type = passengerTypeForAge(age).label;
+      const cards = traveller.cards.map((card) => card.label || card.code).join(', ') || 'Sans carte';
+      return { type, cards };
+    };
+
+    travellerStore.travellers.forEach((traveller) => {
+      const row = document.createElement('label');
+      row.className = 't12-party-member';
+      const checkbox = document.createElement('input');
+      checkbox.type = 'checkbox';
+      checkbox.value = traveller.id;
+      checkbox.checked = activeIds.has(traveller.id);
+      checkbox.dataset.travellerId = traveller.id;
+      const details = document.createElement('span');
+      details.className = 't12-party-details';
+      const name = document.createElement('strong');
+      name.textContent = `${traveller.firstName} ${traveller.lastName}${traveller.isDefault ? ' · par défaut' : ''}`;
+      const summary = document.createElement('span');
+      summary.className = 't12-party-summary';
+      const info = profileLabel(traveller);
+      summary.textContent = `${info.type} · ${info.cards}`;
+      details.append(name, summary);
+      row.append(checkbox, details);
+      list.appendChild(row);
+    });
+
+    const close = () => {
+      overlay.remove();
+      style.remove();
+      document.removeEventListener('keydown', escapeHandler);
+    };
+    const refreshApplyButton = () => {
+      const count = list.querySelectorAll('input[type="checkbox"]:checked').length;
+      apply.textContent = count ? `Actualiser les résultats (${count})` : 'Sélectionnez au moins une personne';
+      apply.disabled = count === 0 || count > 9;
+      if (count > 9) status.textContent = '12train accepte au maximum 9 voyageurs par recherche.';
+      else status.textContent = '';
+    };
+    list.addEventListener('change', refreshApplyButton);
+    cancel.addEventListener('click', close);
+    overlay.addEventListener('click', (event) => { if (event.target === overlay) close(); });
+    let escapeHandler;
+    escapeHandler = (event) => { if (event.key === 'Escape') close(); };
+    document.addEventListener('keydown', escapeHandler);
+
+    manage.addEventListener('click', () => {
+      close();
+      openSettings();
+    });
+    apply.addEventListener('click', () => {
+      const selected = Array.from(list.querySelectorAll('input[type="checkbox"]:checked'))
+        .map((checkbox) => travellerStore.travellers.find((traveller) => traveller.id === checkbox.value))
+        .filter(Boolean);
+      if (!selected.length || selected.length > 9) return;
+      const unchanged = selected.length === activeSearchTravellerIds.length
+        && selected.every((traveller, index) => traveller.id === activeSearchTravellerIds[index]
+          && JSON.stringify(traveller) === JSON.stringify(activeSearchTravellers[index]));
+      close();
+      if (unchanged) return;
+
+      const submit = document.getElementById('journeyplanner-form-submit');
+      if (!submit || !applyPassengerRoster(selected)) {
+        storageNoticeMessage = '12train: impossible de préparer la recherche avec ces voyageurs.';
+        showStorageNotice();
+        return;
+      }
+      updateResultsTravellerButton();
+      submit.click();
+    });
+
+    actions.append(cancel, apply);
+    footer.append(manage, actions);
+    panel.append(title, intro, list, status, footer);
+    overlay.appendChild(panel);
+    document.body.appendChild(overlay);
+    refreshApplyButton();
+  }
+
+  function updateResultsTravellerButton() {
+    const results = document.getElementById('r-s-r-results');
+    const response = document.getElementById('r-s-response');
+    if (!results || !response) return;
+
+    let toolbar = document.getElementById('t12-results-travellers-toolbar');
+    if (!results.querySelector('.r-s-r')) {
+      if (toolbar) toolbar.style.display = 'none';
+      return;
+    }
+
+    if (!toolbar) {
+      toolbar = document.createElement('div');
+      toolbar.id = 't12-results-travellers-toolbar';
+      toolbar.style.cssText = 'display:flex;justify-content:flex-end;margin:8px 0';
+      const button = document.createElement('button');
+      button.id = 't12-results-travellers-btn';
+      button.type = 'button';
+      button.className = 't12-results-travellers-button';
+      button.style.cssText = 'min-height:40px;padding:8px 14px;border:1px solid #adb5bd;border-radius:20px;background:#fff;color:#212529;font:600 14px system-ui,sans-serif;cursor:pointer';
+      button.addEventListener('click', openTravellerSelection);
+      toolbar.appendChild(button);
+      const title = document.getElementById('r-s-r-title');
+      if (title) title.insertAdjacentElement('afterend', toolbar);
+      else response.insertBefore(toolbar, results);
+    }
+    toolbar.style.display = 'flex';
+    const button = document.getElementById('t12-results-travellers-btn');
+    if (button) button.textContent = `Travellers · ${activeSearchTravellerIds.length}`;
+  }
+
+  // ---------------------------------------------------------------------------
   // Booking form: auto-fill identity when it appears
   // (first_name_N / last_name_N / birth_date_{day,month,year}_N / card_number_N)
   // ---------------------------------------------------------------------------
@@ -520,21 +695,23 @@
     const container = document.getElementById('booking-form-passengers-forms');
     if (!container || !container.childElementCount) return;
 
-    const id = getIdentity();
-    if (!id.firstName && !id.lastName && !id.birthDate && !id.cardNumber) return;
-    const birth = parseBirthDate(id.birthDate);
-
     Array.prototype.forEach.call(
       container.getElementsByClassName('passenger-c'),
-      (box) => {
-        setIfEmpty(box.querySelector('input.first-name'), id.firstName);
-        setIfEmpty(box.querySelector('input.last-name'), id.lastName);
+      (box, index) => {
+        const rank = Number(box.dataset.passenger_id) || index + 1;
+        const traveller = activeSearchTravellers[rank - 1];
+        if (!traveller) return;
+
+        const birth = parseBirthDate(traveller.birthDate);
+        setIfEmpty(box.querySelector('input.first-name'), traveller.firstName);
+        setIfEmpty(box.querySelector('input.last-name'), traveller.lastName);
         if (birth) {
           setIfEmpty(box.querySelector('input.passenger-birthdate-day'), pad2(parseInt(birth.day, 10)));
           setIfEmpty(box.querySelector('input.passenger-birthdate-month'), pad2(parseInt(birth.month, 10)));
           setIfEmpty(box.querySelector('input.passenger-birthdate-year'), birth.year);
         }
-        setIfEmpty(box.querySelector('input.passenger-card-number'), id.cardNumber);
+        const cardNumber = traveller.cards.find((card) => card.cardNumber)?.cardNumber || '';
+        setIfEmpty(box.querySelector('input.passenger-card-number'), cardNumber);
       }
     );
   }
@@ -563,6 +740,7 @@
       fillScheduled = false;
       fillBookingForm();
       maybeAskForIdentity();
+      updateResultsTravellerButton();
     }, 150);
   }
 
@@ -994,7 +1172,29 @@
     document.body.appendChild(notice);
   }
 
+  function addTravellerManagerButton() {
+    if (document.getElementById('t12-traveller-manager-btn')) return;
+    const headerRight = document.getElementById('header-right');
+    if (!headerRight) return;
+
+    const gear = document.createElement('button');
+    gear.id = 't12-traveller-manager-btn';
+    gear.type = 'button';
+    gear.title = 'Gérer les voyageurs';
+    gear.setAttribute('aria-label', 'Gérer les voyageurs');
+    gear.textContent = '⚙';
+    gear.style.cssText = 'display:inline-flex;align-items:center;justify-content:center;margin-left:8px;padding:5px 8px;border:0;border-radius:6px;background:transparent;color:inherit;font:18px/1 system-ui,sans-serif;cursor:pointer;vertical-align:middle';
+    gear.addEventListener('click', openSettings);
+
+    const accountLink = Array.from(headerRight.querySelectorAll('a')).find((link) =>
+      /mon compte/i.test(link.textContent) || /\/account(?:[/?#]|$)/i.test(link.getAttribute('href') || '')
+    );
+    if (accountLink) accountLink.insertAdjacentElement('afterend', gear);
+    else headerRight.appendChild(gear);
+  }
+
   function addButton() {
+    addTravellerManagerButton();
     if (document.getElementById('t12-next-train-btn')) return;
     if (!document.getElementById('origin')) return; // only on the search page
 
@@ -1024,30 +1224,8 @@
     window.setInterval(refreshButtonLabel, 30_000);
     document.addEventListener('visibilitychange', refreshButtonLabel);
 
-    const gear = document.createElement('button');
-    gear.id = 't12-traveller-manager-btn';
-    gear.type = 'button';
-    gear.title = 'Gérer les voyageurs';
-    gear.setAttribute('aria-label', 'Gérer les voyageurs');
-    gear.textContent = '⚙';
-    gear.style.cssText = [
-      'position:fixed',
-      'right:16px',
-      'bottom:76px',
-      'z-index:2147483647',
-      'width:36px',
-      'height:36px',
-      'border:0',
-      'border-radius:50%',
-      'background:#343a40',
-      'color:#fff',
-      'font:16px/1 system-ui,sans-serif',
-      'box-shadow:0 3px 10px rgba(0,0,0,.25)',
-      'cursor:pointer',
-    ].join(';');
-    gear.addEventListener('click', openSettings);
-
-    document.body.append(btn, gear);
+    document.body.appendChild(btn);
+    updateResultsTravellerButton();
   }
 
   addButton();
