@@ -3,8 +3,8 @@
 // @namespace    https://12train.com/
 // @homepageURL  https://github.com/kamaradclimber/userscripts-12train/blob/main/12train-next-train.user.js
 // @source       https://github.com/kamaradclimber/userscripts-12train/blob/main/12train-next-train.user.js
-// @version      1.5
-// @description  One-tap search on 12train.com: direction switches at noon Europe/Paris. Pre-selects FN30, automatically selects a fare after its price is tapped, and auto-fills booking details.
+// @version      1.6
+// @description  One-tap 12train search with a local traveller manager, noon-based direction, stored reduction cards, auto fare selection, and booking autofill.
 // @match        https://www.12train.com/*
 // @match        https://12train.com/*
 // @run-at       document-idle
@@ -73,7 +73,7 @@
         firstName: '',
         lastName: '',
         birthDate: '',
-        cards: [{ code: CARD_CODE, cardNumber: '' }],
+        cards: [{ code: CARD_CODE, label: CARD_LABEL, cardNumber: '' }],
       }],
     };
   }
@@ -223,7 +223,7 @@
 
   function getIdentity() {
     const me = getDefaultTraveller();
-    const familyCard = me.cards.find((card) => card.code === CARD_CODE);
+    const familyCard = me.cards.find((card) => card.cardNumber) || me.cards[0];
     return {
       firstName: me.firstName,
       lastName: me.lastName,
@@ -232,46 +232,39 @@
     };
   }
 
-  function saveDefaultIdentity(identity) {
+  function saveTravellerList(travellers, originalStoreRaw) {
     if (storeReadOnly || !storageAvailable) return false;
 
-    // Re-read immediately before writing so a stale tab preserves any other
-    // travellers added or edited by a newer tab.
-    let latest = travellerStore;
+    let latestRaw;
     try {
-      const raw = localStorage.getItem(STORE_KEY);
-      if (raw !== null) {
-        const parsed = JSON.parse(raw);
-        if (parsed.schemaVersion > STORE_SCHEMA_VERSION) {
-          storeReadOnly = true;
-          storageNoticeMessage = '12train: les données ont été créées par une version plus récente du script. Mettez le script à jour avant de modifier vos profils.';
-          return false;
-        }
-        if (!isValidStore(parsed)) {
-          storageNoticeMessage = '12train: le stockage a changé ou est invalide. Rechargez la page avant de réessayer.';
-          return false;
-        }
-        latest = parsed;
-      }
+      latestRaw = localStorage.getItem(STORE_KEY);
     } catch (e) {
       storageNoticeMessage = '12train: impossible de relire les données locales. Rechargez la page avant de réessayer.';
       return false;
     }
-
-    const me = getDefaultTraveller(latest);
-    me.firstName = identity.firstName;
-    me.lastName = identity.lastName;
-    me.birthDate = identity.birthDate;
-    let familyCard = me.cards.find((card) => card.code === CARD_CODE);
-    if (!familyCard) {
-      familyCard = { code: CARD_CODE, cardNumber: '' };
-      me.cards.push(familyCard);
+    if (latestRaw !== originalStoreRaw) {
+      storageNoticeMessage = '12train: les profils ont changé dans un autre onglet. Fermez puis rouvrez le gestionnaire avant d’enregistrer.';
+      return false;
     }
-    familyCard.cardNumber = identity.cardNumber;
-    latest.updatedAt = new Date().toISOString();
 
-    if (!persistStore(latest)) return false;
-    travellerStore = latest;
+    const latest = JSON.parse(latestRaw);
+    if (latest.schemaVersion > STORE_SCHEMA_VERSION) {
+      storeReadOnly = true;
+      storageNoticeMessage = '12train: les données ont été créées par une version plus récente du script. Mettez le script à jour avant de modifier vos profils.';
+      return false;
+    }
+    const updated = {
+      ...latest,
+      schemaVersion: STORE_SCHEMA_VERSION,
+      updatedAt: new Date().toISOString(),
+      travellers,
+    };
+    if (!isValidStore(updated)) {
+      storageNoticeMessage = 'Vérifiez les profils : il faut exactement un voyageur par défaut, et chaque personne doit avoir un prénom, un nom et une date de naissance valide.';
+      return false;
+    }
+    if (!persistStore(updated)) return false;
+    travellerStore = updated;
     return true;
   }
 
@@ -287,6 +280,28 @@
     m = raw.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{4})$/);      // DD/MM/YYYY
     if (m) return { day: m[1], month: m[2], year: m[3] };
     return null;
+  }
+
+  function getAgeOnDate(birthDate, onDate = new Date()) {
+    const parts = parseBirthDate(birthDate);
+    if (!parts) return null;
+    const birth = new Date(Number(parts.year), Number(parts.month) - 1, Number(parts.day));
+    if (birth.getFullYear() !== Number(parts.year)
+        || birth.getMonth() !== Number(parts.month) - 1
+        || birth.getDate() !== Number(parts.day)) return null;
+    let age = onDate.getFullYear() - birth.getFullYear();
+    if (onDate.getMonth() < birth.getMonth()
+        || (onDate.getMonth() === birth.getMonth() && onDate.getDate() < birth.getDate())) age--;
+    return age >= 0 ? age : null;
+  }
+
+  function passengerTypeForAge(age) {
+    if (age === null) return { code: 'AD', label: 'Adulte', ageGroupCode: '59' };
+    if (age <= 3) return { code: 'BB', label: 'Bébé', ageGroupCode: '3' };
+    if (age <= 11) return { code: 'KD', label: 'Enfant', ageGroupCode: '11' };
+    if (age <= 25) return { code: 'YG', label: 'Jeune', ageGroupCode: '25' };
+    if (age <= 59) return { code: 'AD', label: 'Adulte', ageGroupCode: '59' };
+    return { code: 'SR', label: 'Senior', ageGroupCode: '60' };
   }
 
   // Set a value only if the field is empty, then fire an "input" event so the
@@ -335,7 +350,7 @@
   // ---------------------------------------------------------------------------
   // Journey planner form: FN30 passenger
   // ---------------------------------------------------------------------------
-  function buildCardRow() {
+  function buildCardRow(card) {
     const row = document.createElement('div');
     row.className = 'j-p-form-passenger-card-row';
 
@@ -344,9 +359,9 @@
 
     const name = document.createElement('div');
     name.className = 'select j-p-form-passenger-card-selected';
-    name.dataset.card_code = CARD_CODE;
-    name.dataset.card_type = '';
-    name.textContent = CARD_LABEL;
+    name.dataset.card_code = card.code;
+    name.dataset.card_type = card.type || '';
+    name.textContent = card.label || card.code;
 
     const del = document.createElement('img');
     del.src = 'img/app/journey-planner-form-card-delete.png';
@@ -360,7 +375,7 @@
     const props = document.createElement('div');
     row.append(props);
 
-    const cardNumber = getIdentity().cardNumber;
+    const cardNumber = card.cardNumber || '';
     if (cardNumber) {
       const input = document.createElement('input');
       input.className = 'input-text j-p-form-passenger-input j-p-form-passenger-card-number';
@@ -419,20 +434,24 @@
       container.appendChild(box);
     }
 
-    // Make sure the passenger is an adult (rank 1).
+    const defaultTraveller = getDefaultTraveller();
+    const age = getAgeOnDate(defaultTraveller.birthDate);
+    const passengerType = passengerTypeForAge(age);
     const type = box.querySelector('.rail-search-passenger-type');
     if (type) {
       type.dataset.rank = type.dataset.rank || '1';
-      type.dataset.sncf_age_group_code = '59';
-      type.dataset.passenger_type_udt_code = 'AD';
-      type.textContent = 'Adulte';
+      type.dataset.sncf_age_group_code = passengerType.ageGroupCode;
+      type.dataset.passenger_type_udt_code = passengerType.code;
+      type.textContent = passengerType.label;
     }
+    const ageInput = box.querySelector('.j-p-form-passenger-age');
+    if (ageInput && age !== null) ageInput.value = String(age);
 
-    // Replace any existing cards with FN30 so we never send conflicting cards.
+    // Use the default traveller's stored cards, rather than hard-coding FN30.
     const receiver = box.querySelector('.j-p-form-passenger-cards-receiver');
     if (receiver) {
       receiver.innerHTML = '';
-      receiver.appendChild(buildCardRow());
+      defaultTraveller.cards.forEach((card) => receiver.appendChild(buildCardRow(card)));
     }
   }
 
@@ -555,33 +574,366 @@
   // ---------------------------------------------------------------------------
   // Settings
   // ---------------------------------------------------------------------------
-  function openSettings() {
-    if (storeReadOnly) {
-      showStorageNotice();
-      return;
-    }
-    const id = getIdentity();
-    const firstName = prompt('Prénom :', id.firstName);
-    if (firstName === null) return;
-    const lastName = prompt('Nom :', id.lastName);
-    if (lastName === null) return;
-    const birthDate = prompt('Date de naissance (JJ/MM/AAAA) :', id.birthDate);
-    if (birthDate === null) return;
-    const cardNumber = prompt('Numéro de carte de réduction (laisser vide si non demandé) :', id.cardNumber);
-    if (cardNumber === null) return;
+  let cardCatalogPromise;
 
-    const saved = saveDefaultIdentity({
-      firstName: firstName.trim(),
-      lastName: lastName.trim(),
-      birthDate: birthDate.trim(),
-      cardNumber: cardNumber.trim(),
+  function loadCardCatalog() {
+    if (cardCatalogPromise) return cardCatalogPromise;
+    cardCatalogPromise = (async () => {
+      const script = Array.from(document.scripts).find((element) => /\/js\/index\.[^/]+\.js(?:\?|$)/.test(element.src));
+      if (!script) throw new Error('12train card catalogue script not found');
+      const response = await fetch(script.src, { credentials: 'same-origin' });
+      if (!response.ok) throw new Error('12train card catalogue fetch failed');
+      const source = await response.text();
+      const marker = 'const JP_FORM_CARDS_LEVEL_3 = ';
+      const start = source.indexOf(marker);
+      const end = source.indexOf(';function createPassengerCardsMenu', start);
+      if (start < 0 || end < 0) throw new Error('12train card catalogue format changed');
+      const groups = JSON.parse(source.slice(start + marker.length, end));
+      const seen = new Set();
+      return groups.flatMap((group) => group.labels.map((card) => ({
+        code: card.code,
+        label: card.label,
+        type: card.type || '',
+        group: group.level_two_id.replace(/_/g, ' '),
+      }))).filter((card) => {
+        if (!card.code || seen.has(card.code)) return false;
+        seen.add(card.code);
+        return true;
+      });
+    })().catch((error) => {
+      console.warn('12train userscript: using reduced card catalogue', error);
+      return [{ code: CARD_CODE, label: CARD_LABEL, type: '', group: 'Réductions' }];
     });
-    if (!saved) {
+    return cardCatalogPromise;
+  }
+
+  function makeTravellerId() {
+    return `traveller-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  }
+
+  function addField(parent, labelText, input, className) {
+    const wrapper = document.createElement('label');
+    wrapper.className = className || 't12-field';
+    wrapper.append(document.createTextNode(labelText), input);
+    parent.appendChild(wrapper);
+    return input;
+  }
+
+  function makeCardEditor(card, catalog) {
+    const row = document.createElement('div');
+    row.className = 't12-card-editor';
+
+    const select = document.createElement('select');
+    select.dataset.field = 'card-code';
+    const none = document.createElement('option');
+    none.value = '';
+    none.textContent = 'Aucune carte';
+    select.appendChild(none);
+
+    const groups = new Map();
+    for (const item of catalog) {
+      if (!groups.has(item.group)) {
+        const optgroup = document.createElement('optgroup');
+        optgroup.label = item.group;
+        groups.set(item.group, optgroup);
+        select.appendChild(optgroup);
+      }
+      const option = document.createElement('option');
+      option.value = item.code;
+      option.textContent = item.label;
+      groups.get(item.group).appendChild(option);
+    }
+
+    const selected = card && catalog.find((item) => item.code === card.code);
+    if (card && card.code && !selected) {
+      const option = document.createElement('option');
+      option.value = card.code;
+      option.textContent = card.label || card.code;
+      select.appendChild(option);
+    }
+    select.value = card ? card.code : '';
+
+    const number = document.createElement('input');
+    number.type = 'text';
+    number.autocomplete = 'off';
+    number.placeholder = 'N° de carte (si demandé)';
+    number.value = card ? card.cardNumber || '' : '';
+    number.dataset.field = 'card-number';
+
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.textContent = 'Retirer';
+    remove.className = 't12-secondary-button';
+    remove.addEventListener('click', () => row.remove());
+
+    row.append(select, number, remove);
+    return row;
+  }
+
+  function makeTravellerEditor(traveller, index, catalog) {
+    const card = document.createElement('section');
+    card.className = 't12-traveller-editor';
+    card.dataset.travellerId = traveller.id;
+
+    const heading = document.createElement('div');
+    heading.className = 't12-traveller-heading';
+    const title = document.createElement('strong');
+    title.textContent = `Voyageur ${index + 1}`;
+    heading.appendChild(title);
+
+    const defaultLabel = document.createElement('label');
+    defaultLabel.className = 't12-default-choice';
+    const radio = document.createElement('input');
+    radio.type = 'radio';
+    radio.name = 't12-default-traveller';
+    radio.value = traveller.id;
+    radio.checked = traveller.isDefault;
+    radio.dataset.field = 'default';
+    defaultLabel.append(radio, document.createTextNode(' Voyageur par défaut'));
+    heading.appendChild(defaultLabel);
+    card.appendChild(heading);
+
+    const fields = document.createElement('div');
+    fields.className = 't12-traveller-fields';
+    const firstName = document.createElement('input');
+    firstName.type = 'text';
+    firstName.autocomplete = 'given-name';
+    firstName.value = traveller.firstName;
+    firstName.dataset.field = 'first-name';
+    firstName.required = true;
+    addField(fields, 'Prénom', firstName);
+
+    const lastName = document.createElement('input');
+    lastName.type = 'text';
+    lastName.autocomplete = 'family-name';
+    lastName.value = traveller.lastName;
+    lastName.dataset.field = 'last-name';
+    lastName.required = true;
+    addField(fields, 'Nom', lastName);
+
+    const birthDate = document.createElement('input');
+    birthDate.type = 'date';
+    const parsedBirthDate = parseBirthDate(traveller.birthDate);
+    birthDate.value = parsedBirthDate
+      ? `${parsedBirthDate.year}-${pad2(parsedBirthDate.month)}-${pad2(parsedBirthDate.day)}`
+      : '';
+    birthDate.dataset.field = 'birth-date';
+    birthDate.required = true;
+    addField(fields, 'Date de naissance', birthDate);
+    card.appendChild(fields);
+
+    const cardsTitle = document.createElement('div');
+    cardsTitle.className = 't12-cards-title';
+    cardsTitle.textContent = 'Cartes de réduction';
+    card.appendChild(cardsTitle);
+    const cards = document.createElement('div');
+    cards.className = 't12-cards-editor';
+    (traveller.cards || []).forEach((item) => cards.appendChild(makeCardEditor(item, catalog)));
+    card.appendChild(cards);
+
+    const actions = document.createElement('div');
+    actions.className = 't12-traveller-actions';
+    const addCard = document.createElement('button');
+    addCard.type = 'button';
+    addCard.textContent = '+ Ajouter une carte';
+    addCard.className = 't12-secondary-button';
+    addCard.addEventListener('click', () => cards.appendChild(makeCardEditor(null, catalog)));
+    actions.appendChild(addCard);
+
+    const removeTraveller = document.createElement('button');
+    removeTraveller.type = 'button';
+    removeTraveller.textContent = 'Supprimer ce voyageur';
+    removeTraveller.className = 't12-secondary-button t12-delete-traveller';
+    removeTraveller.addEventListener('click', () => {
+      card.remove();
+      const remaining = Array.from(document.querySelectorAll('#t12-traveller-list .t12-traveller-editor'));
+      if (!remaining.some((entry) => entry.querySelector('[data-field="default"]').checked) && remaining.length) {
+        remaining[0].querySelector('[data-field="default"]').checked = true;
+      }
+      renumberTravellerEditors();
+    });
+    actions.appendChild(removeTraveller);
+    card.appendChild(actions);
+    return card;
+  }
+
+  function renumberTravellerEditors() {
+    document.querySelectorAll('#t12-traveller-list .t12-traveller-editor').forEach((card, index) => {
+      card.querySelector('strong').textContent = `Voyageur ${index + 1}`;
+    });
+  }
+
+  async function openSettings() {
+    if (storeReadOnly || !storageAvailable) {
+      showStorageNotice();
+      return;
+    }
+    if (document.getElementById('t12-traveller-manager')) return;
+
+    let originalStoreRaw;
+    try { originalStoreRaw = localStorage.getItem(STORE_KEY); } catch (e) {
+      storageNoticeMessage = '12train: stockage local indisponible; impossible de modifier les voyageurs.';
       showStorageNotice();
       return;
     }
 
-    fillBookingForm(); // apply immediately if the form is on screen
+    const overlay = document.createElement('div');
+    overlay.id = 't12-traveller-manager';
+    overlay.setAttribute('role', 'dialog');
+    overlay.setAttribute('aria-modal', 'true');
+    overlay.setAttribute('aria-label', 'Gestion des voyageurs');
+    overlay.style.cssText = 'position:fixed;inset:0;z-index:2147483647;display:flex;align-items:center;justify-content:center;padding:12px;background:rgba(0,0,0,.55);font:15px/1.4 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;color:#212529';
+
+    const style = document.createElement('style');
+    style.textContent = `
+      #t12-traveller-manager * { box-sizing: border-box; }
+      #t12-traveller-manager input, #t12-traveller-manager select { font: inherit; }
+      #t12-traveller-manager input[type="text"], #t12-traveller-manager input[type="date"], #t12-traveller-manager select { width: 100%; min-height: 42px; border: 1px solid #adb5bd; border-radius: 6px; padding: 8px; background: #fff; color: #212529; }
+      #t12-traveller-manager .t12-traveller-editor { border: 1px solid #dee2e6; border-radius: 8px; padding: 12px; margin: 0 0 12px; }
+      #t12-traveller-manager .t12-traveller-heading, #t12-traveller-manager .t12-traveller-actions, #t12-traveller-manager .t12-card-editor { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+      #t12-traveller-manager .t12-traveller-heading { justify-content: space-between; margin-bottom: 10px; }
+      #t12-traveller-manager .t12-default-choice { display: flex; align-items: center; gap: 5px; font-size: 13px; }
+      #t12-traveller-manager .t12-traveller-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; }
+      #t12-traveller-manager .t12-field { display: grid; gap: 4px; font-size: 13px; }
+      #t12-traveller-manager .t12-cards-title { margin-top: 12px; font-weight: 600; }
+      #t12-traveller-manager .t12-card-editor { margin-top: 6px; }
+      #t12-traveller-manager .t12-card-editor select { flex: 2 1 220px; }
+      #t12-traveller-manager .t12-card-editor input { flex: 1 1 150px; }
+      #t12-traveller-manager button { min-height: 40px; border: 0; border-radius: 6px; padding: 8px 12px; cursor: pointer; font: inherit; }
+      #t12-traveller-manager .t12-secondary-button { background: #e9ecef; color: #212529; }
+      #t12-traveller-manager .t12-primary-button { background: #e8590c; color: #fff; font-weight: 600; }
+      #t12-traveller-manager .t12-delete-traveller { color: #a61e2b; }
+      #t12-traveller-manager .t12-traveller-actions { justify-content: space-between; margin-top: 10px; }
+      #t12-traveller-manager .t12-manager-status { white-space: pre-wrap; }
+    `;
+    document.head.appendChild(style);
+
+    const panel = document.createElement('div');
+    panel.style.cssText = 'width:min(680px,100%);max-height:92vh;overflow:auto;background:#fff;border-radius:12px;padding:18px;box-shadow:0 8px 36px rgba(0,0,0,.35)';
+    const heading = document.createElement('h2');
+    heading.textContent = 'Voyageurs';
+    heading.style.cssText = 'margin:0 0 8px;font-size:21px';
+    const intro = document.createElement('p');
+    intro.textContent = 'Les profils restent dans ce navigateur. Le voyageur par défaut est utilisé par le bouton « Next train ». Les noms et dates de naissance sont enregistrés localement.';
+    intro.style.cssText = 'margin:0 0 14px;font-size:13px;color:#495057';
+    const list = document.createElement('div');
+    list.id = 't12-traveller-list';
+    const status = document.createElement('div');
+    status.className = 't12-manager-status';
+    status.setAttribute('aria-live', 'polite');
+    const footer = document.createElement('div');
+    footer.style.cssText = 'display:flex;gap:8px;justify-content:space-between;flex-wrap:wrap;margin-top:16px';
+    const addTraveller = document.createElement('button');
+    addTraveller.type = 'button';
+    addTraveller.textContent = '+ Ajouter un voyageur';
+    addTraveller.className = 't12-secondary-button';
+    const buttons = document.createElement('div');
+    buttons.style.cssText = 'display:flex;gap:8px;margin-left:auto';
+    const cancel = document.createElement('button');
+    cancel.type = 'button';
+    cancel.textContent = 'Annuler';
+    cancel.className = 't12-secondary-button';
+    const save = document.createElement('button');
+    save.type = 'button';
+    save.textContent = 'Enregistrer';
+    save.className = 't12-primary-button';
+
+    const catalogMessage = document.createElement('p');
+    catalogMessage.textContent = 'Chargement des cartes de réduction…';
+    catalogMessage.style.cssText = 'margin:0 0 12px;color:#6c757d;font-size:13px';
+    panel.append(heading, intro, catalogMessage, list, status);
+    buttons.append(cancel, save);
+    footer.append(addTraveller, buttons);
+    panel.appendChild(footer);
+    overlay.appendChild(panel);
+    document.body.appendChild(overlay);
+
+    let escapeHandler;
+    const close = () => {
+      overlay.remove();
+      style.remove();
+      if (escapeHandler) document.removeEventListener('keydown', escapeHandler);
+    };
+    cancel.addEventListener('click', close);
+    overlay.addEventListener('click', (event) => { if (event.target === overlay) close(); });
+    escapeHandler = (event) => { if (event.key === 'Escape') close(); };
+    document.addEventListener('keydown', escapeHandler);
+
+    const catalog = await loadCardCatalog();
+    if (!overlay.isConnected) return;
+    catalogMessage.remove();
+    const draft = JSON.parse(JSON.stringify(travellerStore.travellers));
+    const render = () => {
+      list.replaceChildren();
+      draft.forEach((traveller, index) => list.appendChild(makeTravellerEditor(traveller, index, catalog)));
+      renumberTravellerEditors();
+    };
+    render();
+
+    addTraveller.addEventListener('click', () => {
+      const person = {
+        id: makeTravellerId(),
+        isDefault: !list.querySelector('[data-field="default"]:checked'),
+        firstName: '',
+        lastName: '',
+        birthDate: '',
+        cards: [],
+      };
+      draft.push(person);
+      list.appendChild(makeTravellerEditor(person, draft.length - 1, catalog));
+      renumberTravellerEditors();
+    });
+
+    save.addEventListener('click', () => {
+      const editors = Array.from(list.querySelectorAll('.t12-traveller-editor'));
+      const travellers = editors.map((editor) => {
+        const birthDate = editor.querySelector('[data-field="birth-date"]').value;
+        const age = getAgeOnDate(birthDate);
+        const cards = Array.from(editor.querySelectorAll('.t12-card-editor')).map((row) => {
+          const code = row.querySelector('[data-field="card-code"]').value;
+          if (!code) return null;
+          const detail = catalog.find((item) => item.code === code);
+          return {
+            code,
+            label: detail ? detail.label : code,
+            type: detail ? detail.type : '',
+            cardNumber: row.querySelector('[data-field="card-number"]').value.trim(),
+          };
+        }).filter(Boolean);
+        return {
+          id: editor.dataset.travellerId,
+          isDefault: !!editor.querySelector('[data-field="default"]').checked,
+          firstName: editor.querySelector('[data-field="first-name"]').value.trim(),
+          lastName: editor.querySelector('[data-field="last-name"]').value.trim(),
+          birthDate,
+          cards,
+          _validBirthDate: age !== null,
+        };
+      });
+
+      const invalid = travellers.find((traveller) => !traveller.firstName || !traveller.lastName || !traveller._validBirthDate);
+      const duplicateCard = travellers.find((traveller) => new Set(traveller.cards.map((card) => card.code)).size !== traveller.cards.length);
+      const multipleCardNumbers = travellers.find((traveller) => traveller.cards.filter((card) => card.cardNumber).length > 1);
+      if (!travellers.length || invalid || duplicateCard || multipleCardNumbers
+          || travellers.filter((traveller) => traveller.isDefault).length !== 1) {
+        status.textContent = duplicateCard
+          ? 'Une même carte ne peut être ajoutée qu’une fois par voyageur.'
+          : multipleCardNumbers
+            ? '12train ne prend en charge qu’un numéro de carte par voyageur.'
+            : 'Chaque voyageur doit avoir un prénom, un nom et une date de naissance valide. Choisissez exactement un voyageur par défaut.';
+        status.style.cssText = 'margin-top:10px;color:#b02a37;font-size:13px';
+        return;
+      }
+      travellers.forEach((traveller) => delete traveller._validBirthDate);
+      if (!saveTravellerList(travellers, originalStoreRaw)) {
+        status.textContent = storageNoticeMessage || 'Impossible d’enregistrer les voyageurs.';
+        status.style.cssText = 'margin-top:10px;color:#b02a37;font-size:13px';
+        return;
+      }
+      close();
+      document.removeEventListener('keydown', escapeHandler);
+      fillBookingForm();
+    });
   }
 
   // ---------------------------------------------------------------------------
@@ -643,8 +995,10 @@
     document.addEventListener('visibilitychange', refreshButtonLabel);
 
     const gear = document.createElement('button');
+    gear.id = 't12-traveller-manager-btn';
     gear.type = 'button';
-    gear.title = 'Prénom, nom, date de naissance, carte';
+    gear.title = 'Gérer les voyageurs';
+    gear.setAttribute('aria-label', 'Gérer les voyageurs');
     gear.textContent = '⚙';
     gear.style.cssText = [
       'position:fixed',

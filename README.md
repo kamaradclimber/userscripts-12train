@@ -23,13 +23,15 @@ saved preferences and one-tap access to a frequent journey.
 - a floating **"Next train …"** button: one tap searches the next trains *today*, from the
   next valid hour — **Chartres → Montparnasse before noon in Europe/Paris**, then
   **Montparnasse → Chartres from noon**. The button's label updates to show the direction it
-  will search. It searches for one adult with the **Carte Famille Nombreuse 30%** (FN30)
-  pre-selected — no card re-selection needed;
+  will search. It searches using the default traveller's age and stored reduction cards (a fresh
+  install defaults to one adult with FN30);
 - after you tap a fare price, automatically clicks the revealed **"Sélectionner ce trajet"**
   button. This selects the train but does not purchase it; booking and payment remain native;
 - **auto-fill of the booking form** (prénom, nom, date de naissance) as soon as the passenger
   form appears after you pick a train;
-- a **⚙ button** to store your identity + card number once, in `localStorage`, per browser.
+- a **⚙ traveller manager** to add, edit, remove, and choose a default traveller. Each profile
+  can store its name, birth date, and reduction cards. The quick-search button still searches
+  only for the default traveller; selecting additional family members for a search is a later step.
 
 Nothing personal is hard-coded in the script; details are stored in that browser's
 `localStorage` (no cloud, no sync — install and configure on each device). The data lives under
@@ -37,8 +39,8 @@ Nothing personal is hard-coded in the script; details are stored in that browser
 Local storage is not encrypted and is accessible to scripts running on the 12train origin and to
 anyone with access to that browser. The script migrates the existing flat `t12_*` keys and leaves
 them in place for rollback. If the new document is corrupt, it backs up the raw value before
-resetting; if it sees a newer schema,
-it preserves it read-only and asks you to update the script.
+resetting; if it sees a newer schema, it preserves it read-only and asks you to update the
+script.
 
 ## Install (Firefox)
 
@@ -48,9 +50,9 @@ it preserves it read-only and asks you to update the script.
    - Desktop: from [addons.mozilla.org](https://addons.mozilla.org/en-US/firefox/addon/violentmonkey/).
    - Android: from the Add-ons menu in Firefox Nightly/Beta (or via the collections workaround).
 2. Create a new script, paste the content of [`12train-next-train.user.js`](12train-next-train.user.js), save.
-3. Open [12train.com](https://www.12train.com), tap the ⚙ button, enter your
-   prénom / nom / date de naissance (JJ/MM/AAAA) / card number (leave empty if the site
-   doesn't ask for one). Done.
+3. Open [12train.com](https://www.12train.com), tap the ⚙ button, complete your traveller
+   profile, select your reduction card, and mark yourself as the default traveller. Existing
+   details from earlier script versions migrate automatically.
 
 ## Tests
 
@@ -65,6 +67,7 @@ node test-no-card.js       # baseline: same search without the card (price delta
 node test-booking-fill.js  # price tap → auto-select fare → booking form auto-filled
 node test-direction.js          # verifies both directions and the button label around noon
 node test-storage-migrations.js # legacy, corrupt, and future-schema migration checks
+node test-traveller-manager.js  # add a traveller, store a card, search with default only
 ```
 
 If 12train changes its DOM, one of these will fail and show what to fix.
@@ -72,8 +75,9 @@ If 12train changes its DOM, one of these will fail and show what to fix.
 ## Maintenance notes
 
 The script relies on 12train's internal page structure (element IDs and CSS classes): station
-codes (`FRQTJ` Chartres, `FRPMO` Paris Montparnasse), card code `FN30`, and the IDs of the
-search/booking form inputs. The searches are performed by the site's own code (the script only
+codes (`FRQTJ` Chartres, `FRPMO` Paris Montparnasse), the site's current card catalogue, and the
+IDs of the search/booking form inputs. A fresh profile starts with card `FN30`. The searches are
+performed by the site's own code (the script only
 fills the form and clicks *Rechercher*), so the payment and booking flow stays 100% native.
 
 ## Licence
