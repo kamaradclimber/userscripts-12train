@@ -20,9 +20,11 @@ saved preferences and one-tap access to a frequent journey.
 
 `12train-next-train.user.js` adds to [12train.com](https://www.12train.com):
 
-- a floating **"Next train Chartres → Montparnasse"** button: one tap searches the next
-  trains *today*, from the next valid hour, for one adult with the **Carte Famille Nombreuse 30%**
-  (FN30) pre-selected — no card re-selection needed;
+- a floating **"Next train …"** button: one tap searches the next trains *today*, from the
+  next valid hour — **Chartres → Montparnasse before noon in Europe/Paris**, then
+  **Montparnasse → Chartres from noon**. The button's label updates to show the direction it
+  will search. It searches for one adult with the **Carte Famille Nombreuse 30%** (FN30)
+  pre-selected — no card re-selection needed;
 - **auto-fill of the booking form** (prénom, nom, date de naissance) as soon as the passenger
   form appears after you pick a train;
 - a **⚙ button** to store your identity + card number once, in `localStorage`, per browser.
@@ -53,6 +55,7 @@ node test-intercept.js     # verifies the exact search POST payload (FN30 includ
 node test-live-search.js   # full search, real results returned
 node test-no-card.js       # baseline: same search without the card (price delta proof)
 node test-booking-fill.js  # search → pick train → booking form auto-filled
+node test-direction.js     # verifies both directions and the button label around noon
 ```
 
 If 12train changes its DOM, one of these will fail and show what to fix.

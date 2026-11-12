@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         12train — Next train Chartres → Montparnasse
+// @name         12train — Next train Chartres ↔ Montparnasse
 // @namespace    https://12train.com/
-// @version      1.1
-// @description  One-tap search on 12train.com: Chartres → Paris Montparnasse, today, next hour, with Carte Famille Nombreuse 30% (FN30) pre-selected. Auto-fills the booking form (first name, last name, birth date, card number).
+// @version      1.2
+// @description  One-tap search on 12train.com: Chartres → Montparnasse before noon in Europe/Paris, Montparnasse → Chartres from noon, today, next hour, with Carte Famille Nombreuse 30% (FN30) pre-selected. Auto-fills booking details.
 // @match        https://www.12train.com/*
 // @match        https://12train.com/*
 // @run-at       document-idle
@@ -15,8 +15,37 @@
   // ---------------------------------------------------------------------------
   // Configuration: journey
   // ---------------------------------------------------------------------------
-  const ORIGIN = { name: 'Chartres', code: 'FRQTJ' };
-  const DESTINATION = { name: 'Paris Montparnasse', code: 'FRPMO' };
+  const CHARTRES = { name: 'Chartres', code: 'FRQTJ' };
+  const MONTPARNASSE = { name: 'Paris Montparnasse', code: 'FRPMO' };
+  const TIME_ZONE = 'Europe/Paris';
+
+  function getParisHour() {
+    return Number(new Intl.DateTimeFormat('en-GB', {
+      timeZone: TIME_ZONE,
+      hour: '2-digit',
+      hourCycle: 'h23',
+    }).format(new Date()));
+  }
+
+  function getJourneyForCurrentTime() {
+    if (getParisHour() < 12) {
+      return {
+        origin: CHARTRES,
+        destination: MONTPARNASSE,
+        label: 'Next train Chartres → Montparnasse',
+      };
+    }
+    return {
+      origin: MONTPARNASSE,
+      destination: CHARTRES,
+      label: 'Next train Montparnasse → Chartres',
+    };
+  }
+
+  function refreshButtonLabel() {
+    const button = document.getElementById('t12-next-train-btn');
+    if (button) button.textContent = getJourneyForCurrentTime().label;
+  }
 
   const CARD_CODE = 'FN30';
   const CARD_LABEL = 'Carte Famille Nombreuse 30%';
@@ -228,8 +257,10 @@
       return;
     }
 
-    setStation(origin, ORIGIN);
-    setStation(destination, DESTINATION);
+    const journey = getJourneyForCurrentTime();
+    setStation(origin, journey.origin);
+    setStation(destination, journey.destination);
+    refreshButtonLabel();
     setToday(dateEl);
     setNextHour(hourEl);
     clearReturn();
@@ -328,7 +359,7 @@
     const btn = document.createElement('button');
     btn.id = 't12-next-train-btn';
     btn.type = 'button';
-    btn.textContent = 'Next train Chartres → Montparnasse';
+    btn.textContent = getJourneyForCurrentTime().label;
     btn.style.cssText = [
       'position:fixed',
       'right:16px',
@@ -345,6 +376,10 @@
       'max-width:calc(100vw - 32px)',
     ].join(';');
     btn.addEventListener('click', go);
+
+    // Keep the displayed direction current if this tab remains open across noon.
+    window.setInterval(refreshButtonLabel, 30_000);
+    document.addEventListener('visibilitychange', refreshButtonLabel);
 
     const gear = document.createElement('button');
     gear.type = 'button';
