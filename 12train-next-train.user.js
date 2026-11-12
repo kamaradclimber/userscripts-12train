@@ -3,7 +3,7 @@
 // @namespace    https://12train.com/
 // @homepageURL  https://github.com/kamaradclimber/userscripts-12train/blob/main/12train-next-train.user.js
 // @source       https://github.com/kamaradclimber/userscripts-12train/blob/main/12train-next-train.user.js
-// @version      1.6
+// @version      1.7
 // @description  One-tap 12train search with a local traveller manager, noon-based direction, stored reduction cards, auto fare selection, and booking autofill.
 // @match        https://www.12train.com/*
 // @match        https://12train.com/*
@@ -576,6 +576,49 @@
   // ---------------------------------------------------------------------------
   let cardCatalogPromise;
 
+  function parseCardCatalog(source) {
+    const marker = 'const JP_FORM_CARDS_LEVEL_3 = ';
+    const markerIndex = source.indexOf(marker);
+    const start = markerIndex < 0 ? -1 : source.indexOf('[', markerIndex + marker.length);
+    if (start < 0) throw new Error('12train card catalogue not found');
+
+    // The site minifies/reformats the code after this JSON between releases, so
+    // find the array's matching bracket rather than depending on a function name.
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    let end = -1;
+    for (let index = start; index < source.length; index++) {
+      const character = source[index];
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (character === '\\') escaped = true;
+        else if (character === '"') inString = false;
+        continue;
+      }
+      if (character === '"') inString = true;
+      else if (character === '[') depth++;
+      else if (character === ']' && --depth === 0) {
+        end = index + 1;
+        break;
+      }
+    }
+    if (end < 0) throw new Error('12train card catalogue is incomplete');
+
+    const groups = JSON.parse(source.slice(start, end));
+    const seen = new Set();
+    return groups.flatMap((group) => group.labels.map((card) => ({
+      code: card.code,
+      label: card.label,
+      type: card.type || '',
+      group: group.level_two_id.replace(/_/g, ' '),
+    }))).filter((card) => {
+      if (!card.code || seen.has(card.code)) return false;
+      seen.add(card.code);
+      return true;
+    });
+  }
+
   function loadCardCatalog() {
     if (cardCatalogPromise) return cardCatalogPromise;
     cardCatalogPromise = (async () => {
@@ -583,26 +626,13 @@
       if (!script) throw new Error('12train card catalogue script not found');
       const response = await fetch(script.src, { credentials: 'same-origin' });
       if (!response.ok) throw new Error('12train card catalogue fetch failed');
-      const source = await response.text();
-      const marker = 'const JP_FORM_CARDS_LEVEL_3 = ';
-      const start = source.indexOf(marker);
-      const end = source.indexOf(';function createPassengerCardsMenu', start);
-      if (start < 0 || end < 0) throw new Error('12train card catalogue format changed');
-      const groups = JSON.parse(source.slice(start + marker.length, end));
-      const seen = new Set();
-      return groups.flatMap((group) => group.labels.map((card) => ({
-        code: card.code,
-        label: card.label,
-        type: card.type || '',
-        group: group.level_two_id.replace(/_/g, ' '),
-      }))).filter((card) => {
-        if (!card.code || seen.has(card.code)) return false;
-        seen.add(card.code);
-        return true;
-      });
+      return parseCardCatalog(await response.text());
     })().catch((error) => {
       console.warn('12train userscript: using reduced card catalogue', error);
-      return [{ code: CARD_CODE, label: CARD_LABEL, type: '', group: 'Réductions' }];
+      return [
+        { code: CARD_CODE, label: CARD_LABEL, type: '', group: 'Réductions' },
+        { code: 'ODS_CARTE_RÉMI_LIBERTÉ_JEUNE', label: 'Carte Rémi Liberté Jeune', type: '', group: 'Centre-Val de Loire' },
+      ];
     });
     return cardCatalogPromise;
   }

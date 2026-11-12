@@ -67,7 +67,7 @@ node test-no-card.js       # baseline: same search without the card (price delta
 node test-booking-fill.js  # price tap → auto-select fare → booking form auto-filled
 node test-direction.js          # verifies both directions and the button label around noon
 node test-storage-migrations.js # legacy, corrupt, and future-schema migration checks
-node test-traveller-manager.js  # add a traveller, store a card, search with default only
+node test-traveller-manager.js  # add a traveller, store Rémi Liberté Jeune, search with default only
 ```
 
 If 12train changes its DOM, one of these will fail and show what to fix.
@@ -76,9 +76,9 @@ If 12train changes its DOM, one of these will fail and show what to fix.
 
 The script relies on 12train's internal page structure (element IDs and CSS classes): station
 codes (`FRQTJ` Chartres, `FRPMO` Paris Montparnasse), the site's current card catalogue, and the
-IDs of the search/booking form inputs. A fresh profile starts with card `FN30`. The searches are
-performed by the site's own code (the script only
-fills the form and clicks *Rechercher*), so the payment and booking flow stays 100% native.
+IDs of the search/booking form inputs. The card list is parsed from the site's catalogue bundle;
+a fresh profile starts with card `FN30`. Searches use the site's own code: the script only
+fills the form and clicks *Rechercher*, so the payment and booking flow stays 100% native.
 
 ## Licence
 

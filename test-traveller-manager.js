@@ -24,6 +24,15 @@ const path = require('path');
     });
 
     await page.goto('https://www.12train.com/', { waitUntil: 'networkidle', timeout: 60000 });
+    // The page bundle is already loaded; stub only the userscript's same-origin
+    // catalogue fetch so this test never performs a live train search.
+    await page.route('**/js/index.*.js', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/javascript',
+        body: 'const JP_FORM_CARDS_LEVEL_3 = [{"level_two_id":"centre_val_de_loire","labels":[{"label":"Carte Rémi Liberté Jeune","code":"ODS_CARTE_RÉMI_LIBERTÉ_JEUNE","type":""},{"label":"Carte test ]","code":"CATALOG_ONLY_TEST","type":""}]}];function createPassengerCardsMenu(){}',
+      });
+    });
     await page.evaluate(() => {
       localStorage.setItem('t12_first_name', 'Me');
       localStorage.setItem('t12_last_name', 'Default');
@@ -38,6 +47,7 @@ const path = require('path');
     await manager.waitFor({ state: 'visible' });
     await manager.locator('.t12-card-editor select').first().waitFor({ state: 'visible', timeout: 15000 });
     assert.strictEqual(await manager.locator('.t12-traveller-editor').count(), 1);
+    assert.strictEqual(await manager.locator('option[value="CATALOG_ONLY_TEST"]').count(), 1);
     assert.strictEqual(await manager.locator('[data-field="default"]').first().isChecked(), true);
 
     await manager.getByRole('button', { name: '+ Ajouter un voyageur' }).click();
@@ -46,7 +56,7 @@ const path = require('path');
     await newTraveller.locator('[data-field="last-name"]').fill('Member');
     await newTraveller.locator('[data-field="birth-date"]').fill('2012-03-04');
     await newTraveller.getByRole('button', { name: '+ Ajouter une carte' }).click();
-    await newTraveller.locator('[data-field="card-code"]').last().selectOption('FN30');
+    await newTraveller.locator('[data-field="card-code"]').last().selectOption('ODS_CARTE_RÉMI_LIBERTÉ_JEUNE');
     await manager.getByRole('button', { name: 'Enregistrer' }).click();
     await manager.waitFor({ state: 'detached' });
 
@@ -60,7 +70,8 @@ const path = require('path');
     assert.strictEqual(stored.travellers[1].lastName, 'Member');
     assert.strictEqual(stored.travellers[1].birthDate, '2012-03-04');
     assert.strictEqual(stored.travellers[1].isDefault, false);
-    assert.strictEqual(stored.travellers[1].cards[0].code, 'FN30');
+    assert.strictEqual(stored.travellers[1].cards[0].code, 'ODS_CARTE_RÉMI_LIBERTÉ_JEUNE');
+    assert.strictEqual(stored.travellers[1].cards[0].label, 'Carte Rémi Liberté Jeune');
 
     await page.click('#t12-next-train-btn');
     await requestSent;
