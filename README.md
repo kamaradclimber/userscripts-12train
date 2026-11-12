@@ -25,6 +25,8 @@ saved preferences and one-tap access to a frequent journey.
   **Montparnasse → Chartres from noon**. The button's label updates to show the direction it
   will search. It searches for one adult with the **Carte Famille Nombreuse 30%** (FN30)
   pre-selected — no card re-selection needed;
+- after you tap a fare price, automatically clicks the revealed **"Sélectionner ce trajet"**
+  button. This selects the train but does not purchase it; booking and payment remain native;
 - **auto-fill of the booking form** (prénom, nom, date de naissance) as soon as the passenger
   form appears after you pick a train;
 - a **⚙ button** to store your identity + card number once, in `localStorage`, per browser.
@@ -54,7 +56,7 @@ npm i playwright  # once
 node test-intercept.js     # verifies the exact search POST payload (FN30 included)
 node test-live-search.js   # full search, real results returned
 node test-no-card.js       # baseline: same search without the card (price delta proof)
-node test-booking-fill.js  # search → pick train → booking form auto-filled
+node test-booking-fill.js  # price tap → auto-select fare → booking form auto-filled
 node test-direction.js     # verifies both directions and the button label around noon
 ```
 

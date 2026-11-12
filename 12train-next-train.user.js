@@ -3,8 +3,8 @@
 // @namespace    https://12train.com/
 // @homepageURL  https://github.com/kamaradclimber/userscripts-12train/blob/main/12train-next-train.user.js
 // @source       https://github.com/kamaradclimber/userscripts-12train/blob/main/12train-next-train.user.js
-// @version      1.3
-// @description  One-tap search on 12train.com: Chartres → Montparnasse before noon in Europe/Paris, Montparnasse → Chartres from noon, today, next hour, with Carte Famille Nombreuse 30% (FN30) pre-selected. Auto-fills booking details.
+// @version      1.4
+// @description  One-tap search on 12train.com: direction switches at noon Europe/Paris. Pre-selects FN30, automatically selects a fare after its price is tapped, and auto-fills booking details.
 // @match        https://www.12train.com/*
 // @match        https://12train.com/*
 // @run-at       document-idle
@@ -272,6 +272,36 @@
   }
 
   // ---------------------------------------------------------------------------
+  // After a user picks a fare price, 12train expands the matching offer and
+  // shows a second "Sélectionner ce trajet" button. Click that button as soon
+  // as it becomes visible; this only selects the train and does not purchase it.
+  // ---------------------------------------------------------------------------
+  function autoSelectExpandedPrice(price, attempt = 0) {
+    if (!price.isConnected || !price.classList.contains('r-s-r-o-price-selected')) return;
+
+    const offer = document.getElementById(price.dataset.bo_key);
+    const button = offer && Array.from(offer.querySelectorAll('.r-s-r-submit-sale'))
+      .find((candidate) => candidate.getClientRects().length > 0 && !candidate.disabled);
+
+    if (button) {
+      button.click();
+      return;
+    }
+
+    // Usually the offer is revealed synchronously. Retry briefly in case the
+    // site renders it asynchronously, while ensuring the same price is selected.
+    if (attempt < 20) window.setTimeout(() => autoSelectExpandedPrice(price, attempt + 1), 100);
+  }
+
+  function attachPriceSelectionAutoclick() {
+    document.addEventListener('click', (event) => {
+      const target = event.target instanceof Element ? event.target : event.target?.parentElement;
+      const price = target?.closest('div.r-s-r-o-price.r-s-r-o-price-with_offer');
+      if (price) window.setTimeout(() => autoSelectExpandedPrice(price), 0);
+    }, true);
+  }
+
+  // ---------------------------------------------------------------------------
   // Booking form: auto-fill identity when it appears
   // (first_name_N / last_name_N / birth_date_{day,month,year}_N / card_number_N)
   // ---------------------------------------------------------------------------
@@ -378,6 +408,7 @@
       'max-width:calc(100vw - 32px)',
     ].join(';');
     btn.addEventListener('click', go);
+    attachPriceSelectionAutoclick();
 
     // Keep the displayed direction current if this tab remains open across noon.
     window.setInterval(refreshButtonLabel, 30_000);

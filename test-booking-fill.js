@@ -1,4 +1,5 @@
-// E2E: search, click first "Réserver" offer, verify booking form auto-fill.
+// E2E: search, click a fare price, verify the follow-up selection is automatic
+// and the booking form is auto-filled.
 // Run: node test-booking-fill.js
 const { firefox } = require('playwright');
 const path = require('path');
@@ -28,16 +29,13 @@ const fs = require('fs');
   await page.click('#t12-next-train-btn');
   await page.waitForTimeout(6000);
 
-  // Click the first 2nd-class price, then the revealed "Sélectionner" button.
+  // Clicking the fare price should auto-click the revealed
+  // "Sélectionner ce trajet" button and inject the passenger booking form.
   const priceBtn = await page.$('div.r-s-r-o-price.r-s-r-o-price-with_offer');
   if (!priceBtn) { console.log('NO PRICE BUTTON'); await browser.close(); process.exit(1); }
   await priceBtn.click();
-  await page.waitForTimeout(500);
-
-  const offerBtn = await page.$('.r-s-r-submit-sale >> visible=true');
-  if (!offerBtn) { console.log('NO OFFER BUTTON'); await browser.close(); process.exit(1); }
-  await offerBtn.click();
-  await page.waitForTimeout(1500);
+  await page.waitForSelector('#booking-form-passengers-forms .passenger-c', { timeout: 10000 });
+  await page.waitForTimeout(300);
 
   const state = await page.evaluate(() => {
     const boxes = [...document.getElementById('booking-form-passengers-forms')?.getElementsByClassName('passenger-c') || []];
