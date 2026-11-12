@@ -1,7 +1,9 @@
 // ==UserScript==
 // @name         12train — Next train Chartres ↔ Montparnasse
 // @namespace    https://12train.com/
-// @version      1.2
+// @homepageURL  https://github.com/kamaradclimber/userscripts-12train/blob/main/12train-next-train.user.js
+// @source       https://github.com/kamaradclimber/userscripts-12train/blob/main/12train-next-train.user.js
+// @version      1.3
 // @description  One-tap search on 12train.com: Chartres → Montparnasse before noon in Europe/Paris, Montparnasse → Chartres from noon, today, next hour, with Carte Famille Nombreuse 30% (FN30) pre-selected. Auto-fills booking details.
 // @match        https://www.12train.com/*
 // @match        https://12train.com/*
